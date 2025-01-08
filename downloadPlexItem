@@ -1,0 +1,148 @@
+#!/usr/bin/env -S deno run --allow-net --allow-write
+
+import { parseArgs } from "jsr:@std/cli/parse-args"
+
+interface MediaItem {
+    MediaContainer: {
+        Metadata?: {
+            childCount?: number
+            grandparentTitle?: string
+            index?: number
+            key?: string
+            leafCount?: number
+            parentIndex?: number
+            ratingKey?: string
+            title?: string
+            Media?: {
+                Part?: {
+                    container?: string
+                    key?: string
+                }[]
+            }[]
+        }[]
+    }
+}
+
+const flags = parseArgs(Deno.args, {
+    string: ['serverUrl', 'rootItemsRatingKeys', 'token', 'path'],
+    default: { path: './' }
+})
+
+if (!flags.serverUrl) {
+    console.error('You must provide the server URL via the --serverUrl flag.')
+    Deno.exit(1)
+}
+
+if (!flags.rootItemsRatingKeys) {
+    console.error('You must provide the rootItem\'s ratingKey via the --rootItemsRatingKeys flag.')
+    Deno.exit(1)
+}
+
+if (!flags.token) {
+    console.error('You must provide your token via the --token flag.')
+    Deno.exit(1)
+}
+
+const serverUrl = flags.serverUrl
+const rootItemsRatingKeys = flags.rootItemsRatingKeys.split(',')
+const token = flags.token
+const path = flags.path.endsWith('/') ? flags.path : flags.path + '/'
+
+const tokenHeader = {
+    'X-Plex-Token': token,
+}
+
+const jsonHeaders = {
+    ...tokenHeader,
+    Accept: 'application/json'
+}
+
+try {
+    await Deno.mkdir(path);
+} catch (error) {
+    if (!(error instanceof Deno.errors.AlreadyExists)) {
+        throw error;
+    }
+}
+
+for (const ratingKey of rootItemsRatingKeys) {
+    await downloadItem(ratingKey, path)
+}
+
+async function downloadItem(ratingKey: string, destination: string) {
+    const mediaItemResponse = await fetch(`${serverUrl}/library/metadata/${ratingKey}`, { headers: jsonHeaders })
+    const mediaItem: MediaItem = await mediaItemResponse.json()
+
+    if (mediaItem.MediaContainer.Metadata == null)
+        return
+
+    const mediaItemMetadata = mediaItem.MediaContainer.Metadata[0]
+
+    if (!mediaItemMetadata.childCount && !mediaItemMetadata.leafCount) {
+        await downloadLeafNode(destination, mediaItem)
+    } else {
+        await downloadInternalNode(destination, ratingKey, mediaItemMetadata.title)
+    }
+}
+
+async function downloadInternalNode(destination: string, ratingKey: string, mediaItemTitle?: string) {
+    const rootMediaItemChildrenResponse = await fetch(`${serverUrl}/library/metadata/${ratingKey}/children`, { headers: jsonHeaders })
+    const rootMediaItemChildren: MediaItem = await rootMediaItemChildrenResponse.json()
+
+    if (rootMediaItemChildren.MediaContainer.Metadata == null)
+        return
+
+    const childrenDestination = `${destination}/${mediaItemTitle}/`
+
+    try {
+        await Deno.mkdir(childrenDestination)
+    } catch (error) {
+        if (!(error instanceof Deno.errors.AlreadyExists)) {
+            throw error;
+        }
+    }
+
+    for (const childMediaItem of rootMediaItemChildren.MediaContainer.Metadata) {
+        if (!childMediaItem.ratingKey) {
+            continue
+        }
+
+        await downloadItem(childMediaItem.ratingKey, childrenDestination)
+    }
+}
+
+async function downloadLeafNode(destination: string, mediaItem: MediaItem) {
+    const mediaItemMetadata = mediaItem.MediaContainer.Metadata?.at(0)
+
+    if (!mediaItemMetadata) {
+        console.error('No Metadata found for item.')
+        return
+    }
+
+    const mediaItemPart = mediaItemMetadata?.Media?.at(0)?.Part?.at(0)
+
+    if (!mediaItemPart) {
+        console.error(`No part found for mediaItem: ${mediaItemMetadata?.title}`)
+        return
+    }
+
+    const seasonNumber = mediaItemMetadata?.parentIndex?.toString().padStart(2, "0")
+    const episodeNumber = mediaItemMetadata?.index?.toString().padStart(2, "0")
+    const destFileName =  `${mediaItemMetadata?.grandparentTitle} - S${seasonNumber}E${episodeNumber} - ${mediaItemMetadata?.title}.${mediaItemPart.container}`
+
+    console.log(`Downloading ${destFileName}`)
+
+    const partResponse = await fetch(`${serverUrl}${mediaItemPart.key}`, { headers: tokenHeader })
+    if (partResponse.body) {
+        try {
+            const destFile = await Deno.open(destination + destFileName, { write: true, createNew: true })
+            await partResponse.body.pipeTo(destFile.writable)
+        } catch (error) {
+            if (!(error instanceof Deno.errors.AlreadyExists)) {
+                throw error;
+            }
+
+            console.log('File already exists. Skipping.')
+        }
+    }
+}
