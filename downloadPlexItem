@@ -13,6 +13,8 @@ interface MediaItem {
             parentIndex?: number
             ratingKey?: string
             title?: string
+            type?: 'movie' | 'show' | 'season' | 'episode'
+            year?: number
             Media?: {
                 Part?: {
                     container?: string
@@ -92,7 +94,7 @@ async function downloadInternalNode(destination: string, ratingKey: string, medi
     if (rootMediaItemChildren.MediaContainer.Metadata == null)
         return
 
-    const childrenDestination = `${destination}/${mediaItemTitle}/`
+    const childrenDestination = `${destination}${mediaItemTitle}/`
 
     try {
         await Deno.mkdir(childrenDestination)
@@ -126,9 +128,17 @@ async function downloadLeafNode(destination: string, mediaItem: MediaItem) {
         return
     }
 
-    const seasonNumber = mediaItemMetadata?.parentIndex?.toString().padStart(2, "0")
-    const episodeNumber = mediaItemMetadata?.index?.toString().padStart(2, "0")
-    const destFileName =  `${mediaItemMetadata?.grandparentTitle} - S${seasonNumber}E${episodeNumber} - ${mediaItemMetadata?.title}.${mediaItemPart.container}`
+    let destFileName = ''
+
+    if (mediaItemMetadata.type === 'movie') {
+        destFileName = `${mediaItemMetadata.title} (${mediaItemMetadata.year})`
+    } else if (mediaItemMetadata.type === 'episode') {
+        const seasonNumber = mediaItemMetadata?.parentIndex?.toString().padStart(2, "0")
+        const episodeNumber = mediaItemMetadata?.index?.toString().padStart(2, "0")
+        destFileName =  `${mediaItemMetadata?.grandparentTitle} - S${seasonNumber}E${episodeNumber} - ${mediaItemMetadata?.title}`
+    }
+
+    destFileName += `.${mediaItemPart.container}`
 
     console.log(`Downloading ${destFileName}`)
 
